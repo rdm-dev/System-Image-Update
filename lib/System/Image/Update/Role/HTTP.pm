@@ -22,7 +22,16 @@ with "System::Image::Update::Role::Async", "System::Image::Update::Role::Logging
 
 has http => ( is => "lazy" );
 
-sub _build_http { my $http = Net::Async::HTTP->new(); $_[0]->loop->add($http); $http }
+sub _build_http { my $http = Net::Async::HTTP->new(user_agent => $_[0]->http_useragent); $_[0]->loop->add($http); $http }
+
+has http_useragent => ( is => "lazy" );
+
+sub _build_http_useragent
+{
+    my $ua = eval{ $_[0]->download_file_prefix.$_[0]->installed_version."-".$_[0]->installed_image };
+    return "unknown" if $@;
+    return $ua;
+}
 
 has http_user => ( is => "lazy" );
 
