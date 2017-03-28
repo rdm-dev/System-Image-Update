@@ -75,6 +75,54 @@ sub _build_update_manifest
     File::Spec->catfile( $self->update_manifest_dirname, $self->update_manifest_basename );
 }
 
+has update_manifest_tmp_suffix => (
+    is      => "ro",
+    default => ".tmp"
+);
+
+has update_manifest_tmp => ( is => "lazy" );
+
+sub _build_update_manifest_tmp
+{
+    my $self = shift;
+    $self->update_manifest . $self->update_manifest_tmp_suffix;
+}
+
+has update_manifest_sign_suffix => (
+    is      => "ro",
+    default => ".sign"
+);
+
+has update_manifest_sign => ( is => "lazy" );
+
+sub _build_update_manifest_sign
+{
+    my $self = shift;
+    $self->update_manifest . $self->update_manifest_sign_suffix;
+}
+
+has update_manifest_sign_uri => ( is => "lazy" );
+
+sub _build_update_manifest_sign_uri
+{
+    my $self = shift;
+    my $u    = URI->new();
+    $u->scheme("http");
+    $u->host( $self->update_server );
+    $u->path( File::Spec->catfile( $self->update_path, $self->update_manifest_basename . $self->update_manifest_sign_suffix ) );
+    $u->as_string;
+}
+
+has openssl => (
+    is      => "ro",
+    default => "openssl"
+);
+
+has update_manifest_public => (
+    is      => "ro",
+    default => "/usr/lib/system-image-update/public.pem"
+);
+
 around collect_savable_config => sub {
     my $next                   = shift;
     my $self                   = shift;
@@ -152,8 +200,38 @@ sub analyse_newer_manifest
     my ( $self, $response ) = @_;
     $response->code == 200 or return $self->scan_error( status_message( $response->code ) );
 
-    make_path( dirname( $self->update_manifest ) );
-    write_file( $self->update_manifest, $response->content );
+    make_path( dirname( $self->update_manifest_tmp ) );
+    write_file( $self->update_manifest_tmp, $response->content );
+
+    $self->do_http_request(
+        uri         => URI->new( $self->update_manifest_sign_uri ),
+        method      => "GET",
+        on_response => sub { $self->verify_newer_manifest(@_) },
+        on_error    => sub { $self->scan_error(@_); },
+    );
+}
+
+sub verify_newer_manifest
+{
+    my ( $self, $response ) = @_;
+    $response->code == 200 or return $self->scan_error( status_message( $response->code ) );
+
+    make_path( dirname( $self->update_manifest_sign ) );
+    write_file( $self->update_manifest_sign, $response->content );
+
+    unless (
+        system( $self->openssl, "dgst", "-sha256",
+            "-verify",                   $self->update_manifest_public, "-signature",
+            $self->update_manifest_sign, $self->update_manifest_tmp
+        ) == 0
+      )
+    {
+        unlink $self->update_manifest_tmp, $self->update_manifest_sign;
+        return $self->scan_error("dgst error");
+    }
+
+    rename( $self->update_manifest_tmp, $self->update_manifest );
+
     $self->clear_manifest;
     $self->clear_recent_manifest_entry;
 
